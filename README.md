@@ -5,9 +5,21 @@
 * Python
 * FastAPI
 * pgvector (Postgres)
-* OpenAI/Azure API (for LLM + embeddings)
+* LLM + embeddings via OpenAI-compatible API (OpenAI for dev; vLLM in production)
 * S3 (or compatible storage)
 
+---
+
+# ✅ Confirmed decisions (pre-build)
+
+| Topic | Decision |
+|-------|----------|
+| **Tenant identity** | API key per tenant (validated on each request). |
+| **Chat auth** | Anyone can ask questions (no login). Public Q&A box. |
+| **Links (v1)** | Option A: store link URL + optional label only. No fetch/scrape. Model can reference "see this link" in answers. |
+| **Upload** | We build the upload API (`POST /upload`); dev team adds microsite UI that calls it. |
+| **Contact when answer missing** | One contact per tenant (`tenants.contact_email`). Prompt instructs: if info not in docs, provide this contact and ask user to reach out. |
+| **Production LLM** | vLLM (OpenAI-compatible). Config: `base_url` + `model`; same client as OpenAI. |
 
 ---
 
@@ -341,6 +353,69 @@ Just:
 
 * PDF upload
 * Chat endpoint
+
+---
+
+# 🏃 Quick start
+
+**1. Virtual environment (recommended)**
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1   # Windows PowerShell
+# On macOS/Linux: source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**2. Env file**
+
+```bash
+cp .env.example .env
+```
+Edit .env: set `OPENAI_API_KEY`, `DATABASE_URL`, `S3_*` if needed.
+
+**3. Database**
+
+Option A — Docker:
+
+```bash
+cd docker && docker-compose up -d db
+# Then run migrations (extension + tables): psql postgresql://postgres:postgres@localhost:5432/eb3chatbot -f migrations/001_initial.sql
+```
+
+Option B — local Postgres with pgvector: run `migrations/001_initial.sql` then start app (app runs `init_db()` to create tables if missing).
+
+**4. Seed a tenant (get an API key)**
+
+```sql
+INSERT INTO tenants (id, name, contact_email, api_key)
+VALUES (gen_random_uuid(), 'Demo', 'contact@example.com', 'test-api-key');
+```
+
+**5. Run the API**
+
+```bash
+uvicorn app.main:app --reload
+```
+
+- **Health:** `GET http://localhost:8000/health`
+- **Upload:** `POST /upload` with header `X-API-Key: test-api-key` and form file.
+- **Chat:** `POST /chat` with header `X-API-Key: test-api-key` and body `{"question": "What is the deductible?"}`.
+- **List docs:** `GET /documents` with `X-API-Key: test-api-key`.
+
+**Local dev without S3:** In `.env` set `USE_LOCAL_STORAGE=true`. Uploaded files are stored under `./local_storage`.
+
+**Windows (PowerShell)** — same steps; activate venv with `.\venv\Scripts\Activate.ps1`. To test with curl:
+```powershell
+# Health
+Invoke-RestMethod -Uri http://localhost:8000/health
+
+# Chat (after seeding tenant and uploading a doc)
+$body = '{"question":"What is the deductible?"}'
+Invoke-RestMethod -Uri http://localhost:8000/chat -Method Post -Body $body -ContentType "application/json" -Headers @{"X-API-Key"="test-api-key"}
+```
+
+**S3:** For production (or dev with real S3), leave `USE_LOCAL_STORAGE` unset or false and set `AWS_*` or `S3_ENDPOINT_URL` (e.g. MinIO).
 
 ---
 
