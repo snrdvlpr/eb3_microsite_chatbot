@@ -26,13 +26,13 @@ async def search_similar_chunks(
     settings = get_settings()
     k = top_k if top_k is not None else settings.retrieval_top_k
     # pgvector cosine distance: <=> ; we want smallest distance = most similar
-    # Cast string to vector in SQL so driver doesn't need to know vector type
+    # CAST avoids :embedding::vector being parsed as two bind params (:embedding and :vector)
     sql = text("""
         SELECT id, chunk_text
         FROM chunks
         WHERE tenant_id = :tenant_id
           AND embedding IS NOT NULL
-        ORDER BY embedding <=> :embedding::vector
+        ORDER BY embedding <=> CAST(:embedding AS vector)
         LIMIT :k
     """)
     result = await session.execute(
@@ -44,4 +44,5 @@ async def search_similar_chunks(
         },
     )
     rows = result.fetchall()
-    return [(UUID(row[0]), row[1]) for row in rows]
+    # row[0] may be asyncpg.pgproto.UUID; convert via str for Python uuid.UUID
+    return [(UUID(str(row[0])), row[1]) for row in rows]
