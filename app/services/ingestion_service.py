@@ -7,7 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.db.repositories import chunk_repo, document_repo
+from app.parsers.docx_parser import extract_text_from_docx_bytes
+from app.parsers.excel_parser import extract_text_from_excel_bytes
 from app.parsers.pdf_parser import extract_text_from_pdf_bytes
+from app.parsers.ppt_parser import extract_text_from_pptx_bytes
 from app.services import embedding_service
 from app.storage.s3_client import upload_file
 from app.utils.chunking import chunk_text
@@ -22,7 +25,7 @@ async def ingest_document(
     session: AsyncSession,
 ) -> UUID:
     """
-    Upload file to S3, parse PDF, chunk, embed, save document + chunks.
+    Upload file to storage, extract text, chunk, embed, save document + chunks.
     Returns document_id.
     """
     settings = get_settings()
@@ -37,18 +40,35 @@ async def ingest_document(
         content_type=content_type,
     )
 
-    # 2. Extract text (PDF only for MVP)
-    if content_type and "pdf" in content_type.lower():
+    # 2. Extract text based on file type
+    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    if (content_type and "pdf" in content_type.lower()) or ext == "pdf":
         raw_text = extract_text_from_pdf_bytes(file_content)
+    elif ext in {"docx"}:
+        raw_text = extract_text_from_docx_bytes(file_content)
+    elif ext in {"xlsx", "xls"}:
+        raw_text = extract_text_from_excel_bytes(file_content)
+    elif ext in {"pptx", "ppt"}:
+        raw_text = extract_text_from_pptx_bytes(file_content)
     else:
-        # Fallback: treat as text or skip
+        # Fallback: treat as UTF-8 text
         raw_text = file_content.decode("utf-8", errors="replace")
     text = clean_extracted_text(raw_text)
-    if not text.strip():
-        raise ValueError("No text could be extracted from the document.")
+    cleaned = text.strip()
+    if not cleaned:
+        # Likely image-based or unsupported; RAG cannot use this without OCR
+        raise ValueError(
+            "No text could be extracted from the document. It may be image-based and require OCR."
+        )
+
+    # Simple rule: if the cleaned text is extremely short, also treat as OCR-needed
+    if len(cleaned) < 50:
+        raise ValueError(
+            "Extracted text is too short. The document appears to be image-based and likely requires OCR."
+        )
 
     # 3. Chunk
-    chunks_list = chunk_text(text)
+    chunks_list = chunk_text(cleaned)
 
     # 4. Embed
     embeddings = await embedding_service.embed_texts(chunks_list)
