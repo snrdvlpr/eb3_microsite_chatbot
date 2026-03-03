@@ -12,6 +12,7 @@ from app.parsers.excel_parser import extract_text_from_excel_bytes
 from app.parsers.pdf_parser import extract_text_from_pdf_bytes
 from app.parsers.ppt_parser import extract_text_from_pptx_bytes
 from app.services import embedding_service
+from app.services.ocr_service import extract_text_with_ocr
 from app.storage.s3_client import upload_file
 from app.utils.chunking import chunk_text
 from app.utils.text_cleaning import clean_extracted_text
@@ -55,17 +56,21 @@ async def ingest_document(
         raw_text = file_content.decode("utf-8", errors="replace")
     text = clean_extracted_text(raw_text)
     cleaned = text.strip()
-    if not cleaned:
-        # Likely image-based or unsupported; RAG cannot use this without OCR
-        raise ValueError(
-            "No text could be extracted from the document. It may be image-based and require OCR."
-        )
 
-    # Simple rule: if the cleaned text is extremely short, also treat as OCR-needed
-    if len(cleaned) < 50:
-        raise ValueError(
-            "Extracted text is too short. The document appears to be image-based and likely requires OCR."
+    # If little or no text, attempt OCR for supported types (e.g. image-based PDFs/PPTX)
+    if not cleaned or len(cleaned) < 50:
+        ocr_text = extract_text_with_ocr(
+            file_content=file_content,
+            file_name=file_name,
+            content_type=content_type,
         )
+        ocr_text = clean_extracted_text(ocr_text)
+        cleaned = ocr_text.strip()
+        if not cleaned:
+            raise ValueError(
+                "No text could be extracted from the document, even with OCR. "
+                "It may be purely image-based or an unsupported format."
+            )
 
     # 3. Chunk
     chunks_list = chunk_text(cleaned)
