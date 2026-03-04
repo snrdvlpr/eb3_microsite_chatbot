@@ -54,6 +54,7 @@ async def ingest_document(
     else:
         # Fallback: treat as UTF-8 text
         raw_text = file_content.decode("utf-8", errors="replace")
+
     text = clean_extracted_text(raw_text)
     cleaned = text.strip()
 

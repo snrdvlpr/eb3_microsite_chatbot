@@ -397,6 +397,10 @@ VALUES (gen_random_uuid(), 'Demo', 'contact@example.com', 'test-api-key');
 ```bash
 uvicorn app.main:app --reload
 ```
+or
+```
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
 - **Health:** `GET http://localhost:8000/health`
 - **Upload:** `POST /upload` with header `X-API-Key: test-api-key` and form file.
@@ -417,22 +421,3 @@ Invoke-RestMethod -Uri http://localhost:8000/chat -Method Post -Body $body -Cont
 
 **S3:** For production (or dev with real S3), leave `USE_LOCAL_STORAGE` unset or false and set `AWS_*` or `S3_ENDPOINT_URL` (e.g. MinIO).
 
----
-
-# 🔥 Most Important Design Principle
-
-Keep layers clean:
-
-Routes → Services → DB/Vector → LLM
-
-No mixing.
-
-If you mix, the project becomes unmaintainable fast.
-
----
-
-If you want next, I can:
-
-* Show you the exact DB schema for pgvector
-* Or write a minimal working ingestion flow example
-* Or design the full request lifecycle step-by-step with pseudo code
