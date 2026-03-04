@@ -1,6 +1,7 @@
 """
 Ingestion: store file in S3, extract text, chunk, embed, save to DB.
 """
+from typing import Optional
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,54 @@ from app.services.ocr_service import extract_text_with_ocr
 from app.storage.s3_client import upload_file
 from app.utils.chunking import chunk_text
 from app.utils.text_cleaning import clean_extracted_text
+
+
+def extract_cleaned_text(
+    file_name: str,
+    file_content: bytes,
+    content_type: Optional[str] = None,
+) -> str:
+    """
+    Extract text from the uploaded file (PDF/DOCX/XLSX/PPTX/etc.),
+    run cleaning and OCR if needed, and return the final cleaned text.
+
+    Raises ValueError if no usable text can be extracted.
+    """
+    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+
+    # Primary extraction based on type
+    if (content_type and "pdf" in content_type.lower()) or ext == "pdf":
+        raw_text = extract_text_from_pdf_bytes(file_content)
+    elif ext in {"docx"}:
+        raw_text = extract_text_from_docx_bytes(file_content)
+    elif ext in {"xlsx", "xls"}:
+        raw_text = extract_text_from_excel_bytes(file_content)
+    elif ext in {"pptx", "ppt"}:
+        raw_text = extract_text_from_pptx_bytes(file_content)
+    else:
+        # Fallback: treat as UTF-8 text
+        raw_text = file_content.decode("utf-8", errors="replace")
+
+    text = clean_extracted_text(raw_text)
+    cleaned = text.strip()
+
+    # If little or no text, attempt OCR for supported types (e.g. image-based PDFs/PPTX)
+    if not cleaned or len(cleaned) < 50:
+        ocr_text = extract_text_with_ocr(
+            file_content=file_content,
+            file_name=file_name,
+            content_type=content_type,
+        )
+        ocr_text = clean_extracted_text(ocr_text)
+        cleaned = ocr_text.strip()
+
+    if not cleaned:
+        raise ValueError(
+            "No text could be extracted from the document, even with OCR. "
+            "It may be purely image-based or an unsupported format."
+        )
+
+    return cleaned
 
 
 async def ingest_document(
@@ -41,37 +90,12 @@ async def ingest_document(
         content_type=content_type,
     )
 
-    # 2. Extract text based on file type
-    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-    if (content_type and "pdf" in content_type.lower()) or ext == "pdf":
-        raw_text = extract_text_from_pdf_bytes(file_content)
-    elif ext in {"docx"}:
-        raw_text = extract_text_from_docx_bytes(file_content)
-    elif ext in {"xlsx", "xls"}:
-        raw_text = extract_text_from_excel_bytes(file_content)
-    elif ext in {"pptx", "ppt"}:
-        raw_text = extract_text_from_pptx_bytes(file_content)
-    else:
-        # Fallback: treat as UTF-8 text
-        raw_text = file_content.decode("utf-8", errors="replace")
-
-    text = clean_extracted_text(raw_text)
-    cleaned = text.strip()
-
-    # If little or no text, attempt OCR for supported types (e.g. image-based PDFs/PPTX)
-    if not cleaned or len(cleaned) < 50:
-        ocr_text = extract_text_with_ocr(
-            file_content=file_content,
-            file_name=file_name,
-            content_type=content_type,
-        )
-        ocr_text = clean_extracted_text(ocr_text)
-        cleaned = ocr_text.strip()
-        if not cleaned:
-            raise ValueError(
-                "No text could be extracted from the document, even with OCR. "
-                "It may be purely image-based or an unsupported format."
-            )
+    # 2. Extract and clean text (includes OCR if needed)
+    cleaned = extract_cleaned_text(
+        file_name=file_name,
+        file_content=file_content,
+        content_type=content_type,
+    )
 
     # 3. Chunk
     chunks_list = chunk_text(cleaned)
