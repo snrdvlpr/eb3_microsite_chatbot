@@ -12,10 +12,24 @@ from app.utils.text_cleaning import clean_extracted_text
 
 
 def _ocr_image(image) -> str:
-    """Run Tesseract OCR on a single PIL.Image."""
+    """Run Tesseract OCR on a single PIL.Image with basic preprocessing."""
     import pytesseract
+    from PIL import Image
 
-    text = pytesseract.image_to_string(image)
+    # Ensure RGB then upscale small images to help OCR quality
+    if not isinstance(image, Image.Image):
+        image = Image.fromarray(image)
+    if image.mode not in ("L", "RGB"):
+        image = image.convert("RGB")
+    min_dim = 800
+    if image.width < min_dim or image.height < min_dim:
+        scale = max(min_dim / image.width, min_dim / image.height)
+        new_size = (int(image.width * scale), int(image.height * scale))
+        image = image.resize(new_size, Image.LANCZOS)
+
+    # Convert to grayscale for more stable OCR
+    gray = image.convert("L")
+    text = pytesseract.image_to_string(gray)
     return clean_extracted_text(text)
 
 
@@ -37,28 +51,80 @@ def _ocr_pptx_bytes(data: bytes) -> str:
     OCR image content from a PPTX file given as bytes.
 
     Text-based shapes are already handled by the PPT parser; here we focus on
-    picture shapes (e.g. scanned documents embedded as images).
+    picture shapes (e.g. scanned documents embedded as images). As a first
+    strategy, try converting the PPTX/PPT to PDF and reuse the stable PDF OCR
+    path; if that fails, fall back to per-image OCR from shapes.
     """
     import io
+    import os
+    import subprocess
+    import tempfile
 
     from PIL import Image
     from pptx import Presentation  # type: ignore[import]
+    from pptx.shapes.group import GroupShape  # type: ignore[import]
 
+    # 1) Try PPTX/PPT -> PDF conversion via LibreOffice (if installed), then reuse PDF OCR
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pptx_path = os.path.join(tmpdir, "input.pptx")
+            pdf_path = os.path.join(tmpdir, "input.pdf")
+            with open(pptx_path, "wb") as f:
+                f.write(data)
+            # libreoffice --headless --convert-to pdf --outdir <tmpdir> input.pptx
+            subprocess.run(
+                [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    tmpdir,
+                    pptx_path,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # LibreOffice may name the output slightly differently; pick any .pdf in tmpdir
+            pdf_files = [f for f in os.listdir(tmpdir) if f.lower().endswith(".pdf")]
+            if pdf_files:
+                pdf_full_path = os.path.join(tmpdir, pdf_files[0])
+                with open(pdf_full_path, "rb") as pf:
+                    pdf_bytes = pf.read()
+                pdf_text = _ocr_pdf_bytes(pdf_bytes)
+                if pdf_text.strip():
+                    return pdf_text
+    except Exception:
+        # If conversion fails for any reason, fall back to per-image OCR below
+        pass
+
+    # 2) Fallback: OCR images directly from shapes (including groups)
     prs = Presentation(io.BytesIO(data))
     parts: list[str] = []
 
+    def iter_shape_images(shape) -> list:
+        """Yield all picture image blobs from a shape, including within groups."""
+        images = []
+        image = getattr(shape, "image", None)
+        if image is not None:
+            images.append(image)
+        # Recurse into group shapes
+        if isinstance(shape, GroupShape):
+            for child in shape.shapes:
+                images.extend(iter_shape_images(child))
+        return images
+
     for slide in prs.slides:
         for shape in slide.shapes:
-            image = getattr(shape, "image", None)
-            if image is None:
-                continue
-            try:
-                with Image.open(io.BytesIO(image.blob)) as img:
-                    t = _ocr_image(img)
-            except Exception:
-                t = ""
-            if t:
-                parts.append(t)
+            for image in iter_shape_images(shape):
+                try:
+                    with Image.open(io.BytesIO(image.blob)) as img:
+                        t = _ocr_image(img)
+                except Exception:
+                    t = ""
+                if t:
+                    parts.append(t)
 
     return "\n\n".join(parts).strip()
 
