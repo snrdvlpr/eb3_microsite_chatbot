@@ -67,6 +67,41 @@ def extract_cleaned_text(
     return cleaned
 
 
+async def process_document_content(
+    tenant_id: UUID,
+    document_id: UUID,
+    file_name: str,
+    file_content: bytes,
+    content_type: str | None,
+    session: AsyncSession,
+) -> None:
+    """
+    Heavy part of ingestion: extract, chunk, embed, and save chunks.
+    Assumes the file is already stored and a Document row already exists.
+    """
+    # Extract and clean text (includes OCR if needed)
+    cleaned = extract_cleaned_text(
+        file_name=file_name,
+        file_content=file_content,
+        content_type=content_type,
+    )
+
+    # Chunk
+    chunks_list = chunk_text(cleaned)
+
+    # Embed
+    embeddings = await embedding_service.embed_texts(chunks_list)
+
+    # Save chunks with embeddings
+    chunks_with_embeddings = list(zip(chunks_list, embeddings))
+    await chunk_repo.create_chunks(
+        session,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        chunks_with_embeddings=chunks_with_embeddings,
+    )
+
+
 async def ingest_document(
     tenant_id: UUID,
     file_name: str,
@@ -90,31 +125,20 @@ async def ingest_document(
         content_type=content_type,
     )
 
-    # 2. Extract and clean text (includes OCR if needed)
-    cleaned = extract_cleaned_text(
-        file_name=file_name,
-        file_content=file_content,
-        content_type=content_type,
-    )
-
-    # 3. Chunk
-    chunks_list = chunk_text(cleaned)
-
-    # 4. Embed
-    embeddings = await embedding_service.embed_texts(chunks_list)
-
-    # 5. Save document
+    # 2. Save document row
     doc = await document_repo.create_document(
         session, tenant_id=tenant_id, file_name=file_name, storage_path=storage_path
     )
     document_id = doc.id
 
-    # 6. Save chunks with embeddings
-    chunks_with_embeddings = list(zip(chunks_list, embeddings))
-    await chunk_repo.create_chunks(
-        session,
+    # 3. Process content (extract, chunk, embed, save chunks)
+    await process_document_content(
         tenant_id=tenant_id,
         document_id=document_id,
-        chunks_with_embeddings=chunks_with_embeddings,
+        file_name=file_name,
+        file_content=file_content,
+        content_type=content_type,
+        session=session,
     )
+
     return document_id
