@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import chat, documents, upload
+from app.api.routes import chat, documents, tenants, upload
 from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.db.session import get_db, init_db
@@ -29,6 +29,7 @@ app = FastAPI(
 app.include_router(upload.router)
 app.include_router(chat.router)
 app.include_router(documents.router)
+app.include_router(tenants.router)
 
 
 @app.get("/health")
